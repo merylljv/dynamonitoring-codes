@@ -39,7 +39,7 @@ def target_time(df, release_ext):
         df['ts_target'] = df['data_timestamp'].apply(lambda x: RoundTime(x) + timedelta(hours=release_ext/60.))
     return df
 
-def feedback(df, AllReleases):
+def feedback(df, AllReleases, MonTeam):
     ts = pd.to_datetime(df['ts'].values[0])
     ts_mon = ts - timedelta(hours=16.5)
     try:
@@ -55,6 +55,13 @@ def feedback(df, AllReleases):
             CurrReleases = CurrReleasesTS.apply(release_time, ts=ts)
         
         CurrSiteMon = len(set(CurrReleases.site_id))
+        if CurrSiteMon > 15:
+            if CurrSiteMon != len(CurrReleases[CurrReleases.reporter_id_mt.isin(MonTeam)]):
+                CurrReleases = CurrReleases[~CurrReleases.reporter_id_mt.isin(MonTeam)]
+                CurrSiteMon = len(set(CurrReleases.site_id))
+#            else:
+#                CurrReleases
+#                CurrSiteMon
     
         if CurrSiteMon <= 5:
             release_ext = 0
@@ -66,11 +73,11 @@ def feedback(df, AllReleases):
         CurrReleases['time_diff'] = CurrReleases['ts_release'] - CurrReleases['ts_target']
         CurrReleases['time_diff'] = CurrReleases['time_diff'].apply(lambda x: x / np.timedelta64(1,'D'))
         
-        Releases_dict = {ts_mon: {'num_site': CurrSiteMon, 'MT': sorted(set(CurrReleases.reporter_id_mt)), 'CT': sorted(set(CurrReleases.reporter_id_ct)), 'delay_release': np.average(CurrReleases['time_diff'].values) * 24 * 60}}
+        Releases = pd.DataFrame({'ts': ts_mon, 'num_site': CurrSiteMon, 'MT': sorted(set(CurrReleases.reporter_id_mt)), 'CT': sorted(set(CurrReleases.reporter_id_ct)), 'delay_release': np.average(CurrReleases['time_diff'].values) * 24 * 60})
     except:
-        Releases_dict = {ts_mon: 'no monitored sites'}
+        Releases = pd.DataFrame({'ts': ts_mon, 'num_site': 'no monitored sites', 'MT': '-', 'CT': '-', 'delay_release': '-'})
     
-    return Releases_dict
+    return Releases
 
 def main(start='', end=''):
     
@@ -100,12 +107,16 @@ def main(start='', end=''):
     AllReleases = pd.DataFrame(r.json())
     AllReleases['data_timestamp'] = AllReleases['data_timestamp'].apply(lambda x: pd.to_datetime(x))
     AllReleases['release_time'] = AllReleases['release_time'].apply(lambda x: pd.to_datetime(x).time())
+    AllReleases['reporter_id_mt'] = AllReleases['reporter_id_mt'].apply(lambda x: int(x))
+    AllReleases['reporter_id_ct'] = AllReleases['reporter_id_ct'].apply(lambda x: int(x))
     
     r = requests.get('http://dewslandslide.com/api2/getStaff')    
     StaffID = pd.DataFrame(r.json())
     StaffID['id'] = StaffID['id'].apply(lambda x: int(x))
+    
+    MonTeam = StaffID[StaffID.last_name.isin(['Viernes', 'Bontia', 'Lorenzo'])]['id'].values
         
-    Releases = dfts.apply(feedback, AllReleases=AllReleases)
+    Releases = dfts.apply(feedback, AllReleases=AllReleases, MonTeam=MonTeam)
     Releases_dict = {}
     for i in range(len(Releases)):
         Releases_dict[Releases[i].keys()[0]] = Releases[i].values()[0]
