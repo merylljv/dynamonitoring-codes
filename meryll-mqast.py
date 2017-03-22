@@ -59,9 +59,9 @@ def feedback(df, AllReleases, MonTeam):
             if CurrSiteMon != len(CurrReleases[CurrReleases.reporter_id_mt.isin(MonTeam)]):
                 CurrReleases = CurrReleases[~CurrReleases.reporter_id_mt.isin(MonTeam)]
                 CurrSiteMon = len(set(CurrReleases.site_id))
-#            else:
-#                CurrReleases
-#                CurrSiteMon
+    #            else:
+    #                CurrReleases
+    #                CurrSiteMon
     
         if CurrSiteMon <= 5:
             release_ext = 0
@@ -73,9 +73,9 @@ def feedback(df, AllReleases, MonTeam):
         CurrReleases['time_diff'] = CurrReleases['ts_release'] - CurrReleases['ts_target']
         CurrReleases['time_diff'] = CurrReleases['time_diff'].apply(lambda x: x / np.timedelta64(1,'D'))
         
-        Releases = pd.DataFrame({'ts': ts_mon, 'num_site': CurrSiteMon, 'MT': sorted(set(CurrReleases.reporter_id_mt)), 'CT': sorted(set(CurrReleases.reporter_id_ct)), 'delay_release': np.average(CurrReleases['time_diff'].values) * 24 * 60})
+        Releases = pd.DataFrame({'ts': [ts_mon], 'num_site': [CurrSiteMon], 'MT': [sorted(set(CurrReleases.reporter_id_mt))], 'CT': [sorted(set(CurrReleases.reporter_id_ct))], 'delay_release': [max(CurrReleases['time_diff'].values) * 24 * 60]})
     except:
-        Releases = pd.DataFrame({'ts': ts_mon, 'num_site': 'no monitored sites', 'MT': '-', 'CT': '-', 'delay_release': '-'})
+        Releases = pd.DataFrame({'ts': [ts_mon], 'num_site': ['no monitored sites'], 'MT': ['-'], 'CT': ['-'], 'delay_release': ['-']})
     
     return Releases
 
@@ -117,11 +117,8 @@ def main(start='', end=''):
     MonTeam = StaffID[StaffID.last_name.isin(['Viernes', 'Bontia', 'Lorenzo'])]['id'].values
         
     Releases = dfts.apply(feedback, AllReleases=AllReleases, MonTeam=MonTeam)
-    Releases_dict = {}
-    for i in range(len(Releases)):
-        Releases_dict[Releases[i].keys()[0]] = Releases[i].values()[0]
     
-    return Releases_dict
+    return Releases.reset_index(drop=True)
     
 if __name__ == '__main__':
-    df = main(start = '2017-02-13', end = '2017-02-20')
+    df = main(start = '2017-02-19', end = '2017-02-22')
