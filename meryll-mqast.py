@@ -120,9 +120,9 @@ def main(start='', end=''):
     Releases = Releases[Releases.delay_release != '-']
     Releases = Releases.sort('delay_release')
     
-    return Releases.reset_index(drop=True)
+    return Releases.reset_index(drop=True), AllReleases
     
 if __name__ == '__main__':
-    df = main(start = '2017-01-01', end = '2017-03-31')
+    Releases, AllReleases = main(start = '2017-01-01', end = '2017-03-31')
 #    temp = AllReleases[(AllReleases.reporter_id_ct.isin([27]))&(AllReleases.reporter_id_mt.isin([9]))]
 #    temp[temp.data_timestamp >= pd.to_datetime('2017-01-01')]
