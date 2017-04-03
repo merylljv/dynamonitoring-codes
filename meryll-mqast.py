@@ -59,9 +59,9 @@ def feedback(df, AllReleases, MonTeam):
             if CurrSiteMon != len(CurrReleases[CurrReleases.reporter_id_mt.isin(MonTeam)]):
                 CurrReleases = CurrReleases[~CurrReleases.reporter_id_mt.isin(MonTeam)]
                 CurrSiteMon = len(set(CurrReleases.site_id))
-    #            else:
-    #                CurrReleases
-    #                CurrSiteMon
+#            else:
+#                CurrReleases
+#                CurrSiteMon
     
         if CurrSiteMon <= 5:
             release_ext = 0
@@ -117,8 +117,12 @@ def main(start='', end=''):
     MonTeam = StaffID[StaffID.last_name.isin(['Viernes', 'Bontia', 'Lorenzo'])]['id'].values
         
     Releases = dfts.apply(feedback, AllReleases=AllReleases, MonTeam=MonTeam)
+    Releases = Releases[Releases.delay_release != '-']
+    Releases = Releases.sort('delay_release')
     
     return Releases.reset_index(drop=True)
     
 if __name__ == '__main__':
-    df = main(start = '2017-02-19', end = '2017-02-22')
+    df = main(start = '2017-01-01', end = '2017-03-31')
+#    temp = AllReleases[(AllReleases.reporter_id_ct.isin([27]))&(AllReleases.reporter_id_mt.isin([9]))]
+#    temp[temp.data_timestamp >= pd.to_datetime('2017-01-01')]
