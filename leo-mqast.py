@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 import platform
 import pandas.io.sql as psql
+import querySenslopeDb as q
 
 curOS = platform.system()
 
@@ -26,7 +27,7 @@ Hostdb = '192.168.150.127'
 Userdb = "root"
 Passdb = "senslope"
 Namedb = "senslopedb"
-
+event_csv_file = 'q1monitoringevents.csv'
 def get_num_monitored(ts_release):
     ##c/o Meryll
     if ts_release.hour == 20:
@@ -290,7 +291,7 @@ def GetReleaseTS(monitoring_event):
     #### Check the delay time
     for release_time in release_times:
         result = GetEWITimeWritten(release_time,event_site)
-        print result
+
         if pd.to_datetime(release_time) <= pd.datetime(2017,01,15):
             continue
 
@@ -323,33 +324,75 @@ def GetReleaseTS(monitoring_event):
 def GetStatsEventBasedMonitoring(event_csv_file):
     #### Get data of monitoring events from csv file
     monitoring_events = pd.read_csv(event_csv_file,parse_dates = ['event_start','event_end'])
-    monitoring_events = monitoring_events[monitoring_events.site == 'sum']
-    print monitoring_events
     results = monitoring_events.apply(GetReleaseTS,axis = 1)
     results = monitoring_events.merge(results,left_index = True, right_index = True)
     
-    average_delay_written = results.delay_written.values*results.total.values/np.sum(results.total.values)
-    average_delay_sent = results.delay_sent.values*results.total.values/np.sum(results.total.values)
-    percent_missed_ewi = np.sum(results.missed.values)/np.sum(results.total.values)
-    
+    average_delay_written = np.sum(results.delay_written.values)/np.sum(results.total.values)
+    average_delay_sent = np.sum(results.delay_sent.values)/np.sum(results.total.values)
+    total_release = np.sum(results.total)
+    total_missed = np.sum(results.missed)
     print results
     print "\n\n"
     print "-------------------------------------------\n"
-    print "Average delay (written): {} minutes\n".format(round(average_delay_written),2)
-    print "Average delay (sent): {} minutes\n".format(round(average_delay_sent),2)
-    print "Total number of EWI releases: {}\n".format(results.total.values)
-    print "Total number of missed: {}\n"
+    print "Average delay (written): {} minutes\n".format(round(average_delay_written,2))
+    print "Average delay (sent): {} minutes\n".format(round(average_delay_sent,2))
+    print "Total number of EWI releases: {}\n".format(total_release)
+    print "Total number of missed: {}\n".format(total_missed)
+    print "Success rate: {}%".format(np.round((1 - total_missed / total_release)*100,2))
     #### Get timestamps of releases
     return results
+
+def ComputeRoutineDelay(routine_monitoring_data):
+    ts_written = pd.to_datetime(routine_monitoring_data.timestamp_written)
+    ts_sent = pd.to_datetime(routine_monitoring_data.timestamp_sent)
+    delay_written = ts_written - pd.datetime(ts_written.year,ts_written.month,ts_written.day,12,0)
+    delay_sent = ts_sent - ts_written
+    return pd.Series({'delay_written':delay_written/np.timedelta64(1,'m'),'delay_sent':delay_sent/np.timedelta64(1,'m')})
+    
     
 
+def GetStatsRoutineMonitoring(ts_start,ts_end):
+    #### Get all routine monitoring messages
+    routine_monitoring_data = pd.DataFrame(columns = ['timestamp_written'])
+    db = mysqlDriver.connect(host = Hostdb, user = Userdb, passwd = Passdb, db=Namedb)
+    cur = db.cursor()
+    cur.execute("USE {}".format(Namedb))
+
+    query = "SELECT timestamp_written, timestamp_sent FROM smsoutbox WHERE sms_id >= (SELECT max(sms_id) - 50000 FROM smsoutbox) AND timestamp_written >= '{}' AND timestamp_written <= '{}' AND sms_msg LIKE '%ang alert level sa inyong lugar%' AND NOT(sms_msg LIKE '%extended%') ORDER by sms_id asc ".format(pd.to_datetime(ts_start).strftime("%Y-%m-%d %H:%M"),pd.to_datetime(ts_end).strftime("%Y-%m-%d %H:%M"))
+    cur.execute(query)
     
+    results = cur.fetchall()
+    db.close()
+    results = zip(*results)
     
+    routine_monitoring_data['timestamp_written'] = results[0]
+    routine_monitoring_data['timestamp_sent'] = results[1]
+    routine_monitoring_data.dropna(inplace = True)
+    print routine_monitoring_data
+    delay_times = routine_monitoring_data.apply(ComputeRoutineDelay,axis = 1)
+    results = routine_monitoring_data.merge(delay_times,left_index = True,right_index = True)
+
+    print results
     
+    delay_written = results[results.delay_written >= 0].delay_written
+    delay_sent = results[results.delay_sent >= 0].delay_sent    
     
+    average_delay_written = np.sum(delay_written)/len(results)
+    average_delay_sent = np.sum(delay_sent)/len(results)
+    total_release = len(results)
+    total_missed = len(delay_written[delay_written > 20])
     
-    
-    
+    print "\n\n"
+    print "-------------------------------------------\n"
+    print "Average delay (written): {} minutes\n".format(round(average_delay_written,2))
+    print "Average delay (sent): {} minutes\n".format(round(average_delay_sent,2))
+    print "Total number of EWI releases: {}\n".format(total_release)
+    print "Total number of missed: {}\n".format(total_missed)
+    print "Success rate: {}%".format(np.round((1 - total_missed / float(total_release))*100,2))
+    #### Get timestamps of releases
+    return results
+
+
     
     
     
