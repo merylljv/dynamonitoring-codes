@@ -26,9 +26,9 @@ def RoundTime(date_time):
 
 def release_time(df, ts):
     if df['release_time'].values[0] < time(20, 0):
-        df['ts_release'] = df['release_time'].apply(lambda x: datetime.combine(ts.date(), x))
+        df['ts_release'] = df['release_time'].apply(lambda x: datetime.combine(ts.date()+timedelta(1), x))
     else:
-        df['ts_release'] = df['release_time'].apply(lambda x: datetime.combine(ts.date()-timedelta(1), x))
+        df['ts_release'] = df['release_time'].apply(lambda x: datetime.combine(ts.date(), x))
     return df
 
 def target_time(df, release_ext):
@@ -41,15 +41,15 @@ def target_time(df, release_ext):
 
 def feedback(df, AllReleases, MonTeam):
     ts = pd.to_datetime(df['ts'].values[0])
-    ts_mon = ts - timedelta(hours=16.5)
+    ts_mon = ts + timedelta(hours=7.5)
     try:
-        mon_end = ts - timedelta(hours=4)
+        mon_end = ts + timedelta(hours=20)
         mon_start = mon_end - timedelta(0.5)
     
         CurrReleases = AllReleases[(AllReleases.data_timestamp >= mon_start)&(AllReleases.data_timestamp < mon_end)]
         
         if ts.time() == time(0, 0):
-            CurrReleases['ts_release'] = CurrReleases['release_time'].apply(lambda x: datetime.combine(ts.date()-timedelta(1), x))
+            CurrReleases['ts_release'] = CurrReleases['release_time'].apply(lambda x: datetime.combine(ts.date(), x))
         else:
             CurrReleasesTS = CurrReleases.groupby('release_time')
             CurrReleases = CurrReleasesTS.apply(release_time, ts=ts)
@@ -105,6 +105,7 @@ def main(start='', end=''):
     
     r = requests.get('http://dewslandslide.com/api2/getAllReleases')    
     AllReleases = pd.DataFrame(r.json())
+    AllReleases = AllReleases[~AllReleases.internal_alert_level.isin(['A0', 'ND'])]
     AllReleases['data_timestamp'] = AllReleases['data_timestamp'].apply(lambda x: pd.to_datetime(x))
     AllReleases['release_time'] = AllReleases['release_time'].apply(lambda x: pd.to_datetime(x).time())
     AllReleases['reporter_id_mt'] = AllReleases['reporter_id_mt'].apply(lambda x: int(x))
@@ -118,11 +119,15 @@ def main(start='', end=''):
         
     Releases = dfts.apply(feedback, AllReleases=AllReleases, MonTeam=MonTeam)
     Releases = Releases[Releases.delay_release != '-']
-    Releases = Releases.sort('delay_release')
+    Releases = Releases.sort_values('delay_release')
     
-    return Releases.reset_index(drop=True), AllReleases
+    return Releases.reset_index(drop=True), AllReleases, StaffID
     
 if __name__ == '__main__':
-    Releases, AllReleases = main(start = '2017-01-01', end = '2017-03-31')
+    Releases, AllReleases, StaffID = main(start = '2017-01-01', end = '2017-04-03')
+    print '\n\n'
+    print 'Average Delay =', np.average(list(Releases[Releases.delay_release > 0].delay_release)), 'mins'
+    print 'Maximum Delay =', max(list(Releases[Releases.delay_release > 0].delay_release)), 'mins'
+    print '\n\n'
 #    temp = AllReleases[(AllReleases.reporter_id_ct.isin([27]))&(AllReleases.reporter_id_mt.isin([9]))]
 #    temp[temp.data_timestamp >= pd.to_datetime('2017-01-01')]
