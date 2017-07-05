@@ -543,7 +543,7 @@ def GetStatsEventBasedMonitoring2(event_csv_file):
     
     #### Uncomment to write results to csv file
 #    results_to_csv = pd.concat([pd.DataFrame(dict(zip(results.columns,results.ix[i]))) for i in range(len(results))])
-#    results_to_csv.to_csv('q2monitoringdata.csv')
+#    results_to_csv.to_csv('q2eventmonitoringdata.csv')
     
     print "\n\n"
     print "Event-Based Monitoring Statistics:"
@@ -619,12 +619,14 @@ def GetReleaseTS2(monitoring_event):
     #### Change site name
     event_site = SiteToBgy2(event_site)
     
-    #### Round to next hour if minutes > 0
+    #### Round offset start to next hour if minutes > 0 (to be used in computing next release time)
     if event_start.minute > 0:
-        event_start = event_start + pd.Timedelta(minutes = 60 - event_start.minute)
+        event_start_offset = event_start + pd.Timedelta(minutes = 60 - event_start.minute)
+    else:
+        event_start_offset = event_start
     
     #### Get offset time before next release
-    next_release_timedelta = np.array((0,4.,8.,12.,16.,20.,24.)) - event_start.hour
+    next_release_timedelta = np.array((0,4.,8.,12.,16.,20.,24.)) - event_start_offset.hour
     print "Checking event-based monitoring on \nSite {} from {} to {}...\n\n".format(event_site.upper(),event_start,event_end)
     try:
         next_release_timedelta = min(next_release_timedelta[next_release_timedelta > 0])
@@ -632,7 +634,7 @@ def GetReleaseTS2(monitoring_event):
         next_release_timedelta = 0
 
     #### Round start time to nearest release time
-    second_release = event_start + pd.Timedelta(next_release_timedelta,'h')    
+    second_release = event_start_offset + pd.Timedelta(next_release_timedelta,'h')    
     
     #### Release time is every 4 hours after second release
     release_times = np.insert(pd.date_range(second_release,event_end,freq = '4H').values,0,event_start)
