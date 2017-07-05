@@ -541,6 +541,10 @@ def GetStatsEventBasedMonitoring2(event_csv_file):
     max_delay_sent = max(delay_sent)
     sd_delay_sent = np.sqrt(np.var(delay_sent))
     
+    #### Uncomment to write results to csv file
+#    results_to_csv = pd.concat([pd.DataFrame(dict(zip(results.columns,results.ix[i]))) for i in range(len(results))])
+#    results_to_csv.to_csv('q2monitoringdata.csv')
+    
     print "\n\n"
     print "Event-Based Monitoring Statistics:"
     print "-------------------------------------------\n"
