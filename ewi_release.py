@@ -25,11 +25,11 @@ from functools import partial
 max_tard = 10.
 
 Hostdb = '192.168.150.127'
-Hostdb2 = '192.168.150.129'
+Hostdb2 = '127.0.0.1'
 Userdb = "root"
 Passdb = "senslope"
 Namedb = "senslopedb"
-event_csv_file = 'q1monitoringevents.csv'
+event_csv_file = '2017monitoringevents.csv'
 def get_num_monitored(ts_release):
     ##c/o Meryll
     if ts_release.hour == 20:
@@ -277,6 +277,11 @@ def SiteToBgy2(event_site):
     #### Get result
     brgy = cur.fetchone()[0]
     
+    if event_site == 'hin':
+        brgy = '1 & 2'
+    elif event_site == 'mca':
+        brgy = 'Arthur'
+    
     return brgy
 
 def BgyToSite(brgy):
@@ -287,11 +292,17 @@ def BgyToSite(brgy):
     cur.execute("USE {}".format(Namedb))
     
     #### Query to sites table
-    query = "SELECT code FROM sites WHERE brgy = '{}'".format(brgy)
+    query = "SELECT code FROM sites WHERE brgy LIKE '%{}%'".format(brgy)
     cur.execute(query)
     
     #### Get result
-    code = cur.fetchone()[0]
+    try:
+        code = cur.fetchone()[0]
+    except:
+        print "No site code obtained for bgy {}".format(brgy)
+    
+    if brgy == '1 & 2':
+        code = 'hin'
     
     return code
 
@@ -448,7 +459,7 @@ def GetStatsRoutineMonitoring2(ts_start,ts_end):
     cur = db.cursor()
     cur.execute("USE {}".format(Namedb))
 
-    query = "SELECT timestamp_written, timestamp_sent FROM smsoutbox WHERE sms_id >= (SELECT max(sms_id) - 50000 FROM smsoutbox) AND timestamp_written >= '{}' AND timestamp_written <= '{}' AND sms_msg LIKE '%ang alert level sa inyong lugar%' AND NOT(sms_msg LIKE '%extended%') ORDER by sms_id asc ".format(pd.to_datetime(ts_start).strftime("%Y-%m-%d %H:%M"),pd.to_datetime(ts_end).strftime("%Y-%m-%d %H:%M"))
+    query = "SELECT timestamp_written, timestamp_sent FROM smsoutbox WHERE sms_id >= (SELECT max(sms_id) - 230000 FROM smsoutbox) AND timestamp_written >= '{}' AND timestamp_written <= '{}' AND sms_msg LIKE '%ang alert level sa inyong lugar%' AND NOT(sms_msg LIKE '%extended%') ORDER by sms_id asc ".format(pd.to_datetime(ts_start).strftime("%Y-%m-%d %H:%M"),pd.to_datetime(ts_end).strftime("%Y-%m-%d %H:%M"))
     cur.execute(query)
     
     results = cur.fetchall()
@@ -522,7 +533,6 @@ def GetStatsEventBasedMonitoring2(event_csv_file):
     monitoring_events = pd.read_csv(event_csv_file,parse_dates = ['event_start','event_end'])
     results = monitoring_events.apply(GetReleaseTS2,axis = 1)
     results = monitoring_events.merge(results,left_index = True, right_index = True)
-    
     delay_written = np.concatenate(results.delay_written.values)
     delay_sent = np.concatenate(results.delay_sent.values)
 
@@ -598,7 +608,7 @@ def GetEWITimeWritten2(ts_release,ts_next_release,site):
     cur = db.cursor()
     cur.execute("USE {}".format(Namedb))
 
-    query = "SELECT timestamp_written, timestamp_sent FROM smsoutbox WHERE sms_id >= (SELECT max(sms_id) - 50000 FROM smsoutbox) AND timestamp_written >= '{}' AND timestamp_written <= '{}' AND sms_msg LIKE '%{}%' AND sms_msg LIKE '%ang alert level%' AND NOT(sms_msg LIKE '%ang alert level sa inyong lugar%') ORDER by sms_id asc".format(ts_release.strftime("%Y-%m-%d %H:%M"),ts_end.strftime("%Y-%m-%d %H:%M"),site.title())
+    query = "SELECT timestamp_written, timestamp_sent FROM smsoutbox WHERE sms_id >= (SELECT max(sms_id) - 230000 FROM smsoutbox) AND timestamp_written >= '{}' AND timestamp_written <= '{}' AND sms_msg LIKE '%{}%' AND sms_msg LIKE '%ang alert level%' AND NOT(sms_msg LIKE '%ang alert level sa inyong lugar%') ORDER by sms_id asc".format(ts_release.strftime("%Y-%m-%d %H:%M"),ts_end.strftime("%Y-%m-%d %H:%M"),site.title())
     cur.execute(query)
     
     try:
@@ -684,9 +694,68 @@ def GetReleaseTS2(monitoring_event):
         delay_written_values = np.append(delay_written_values,cur_delay_written/np.timedelta64(1,'m'))
 
     return pd.Series({'release_times':release_times,'delay_written':delay_written_values,'delay_sent':delay_sent_values,'missed_alerts':missed_alerts})
-  
+
+def GetBaselineStats(event_monitoring_stats,baseline = 15.):
+    '''
+    Prints the baseline stats based on the event monitoring stats dataframe
     
+    Parameters
+    ----------------
+    event_monitoring_stats - pd.DataFrame()
+        results data frame of GetStatsEventBasedMonitoring2
+    baseline - float
+        As per protocol, the recommended time of release of the EWI (in minutes)
     
+    Returns
+    ----------------
+    site_monitoring_stats - pd.DataFrame()
+        baselin performance dataframe for each site
+    '''
+    
+    #### Initialize results dataframe
+    site_monitoring_stats = pd.DataFrame(columns = ['site','performance'])
+    
+    #### Iterate through all sites
+    for site in np.unique(event_monitoring_stats.site):
+
+        #### Get delay written times
+        delay_written_values = np.concatenate(event_monitoring_stats[event_monitoring_stats.site == site].delay_written.values)
+        
+        #### Get number of total releases
+        total = float(len(delay_written_values))
+        
+        #### Get number of successful releases
+        success = float(len(delay_written_values[delay_written_values <= baseline]))
+        
+        #### Get percentage
+        performance = success / total
+        
+        #### Add to results data frame
+        site_monitoring_stats = site_monitoring_stats.append({'site':site,'performance':performance},ignore_index = True)
+    
+    #### Print results
+    print "\nBaseline Performance:\n"
+    row_format = "{:^15}"*3
+    num_format = "{:^15}"*3
+    print row_format.format('% success','ratio','% sites')
+    print row_format.format('-'*13,'-'*13,'-'*13)
+    print num_format.format('75%','{}/{}'.format(
+            len(site_monitoring_stats[site_monitoring_stats.performance >= 0.75]),
+               len(site_monitoring_stats)),'{:.2f}%'.format(len(site_monitoring_stats[site_monitoring_stats.performance >= 0.75])/ float(len(site_monitoring_stats)) * 100))
+    print num_format.format('80%','{}/{}'.format(
+            len(site_monitoring_stats[site_monitoring_stats.performance >= 0.80]),
+               len(site_monitoring_stats)),'{:.2f}%'.format(len(site_monitoring_stats[site_monitoring_stats.performance >= 0.80])/ float(len(site_monitoring_stats)) * 100))
+    print num_format.format('85%','{}/{}'.format(
+            len(site_monitoring_stats[site_monitoring_stats.performance >= 0.85]),
+               len(site_monitoring_stats)),'{:.2f}%'.format(len(site_monitoring_stats[site_monitoring_stats.performance >= 0.85])/ float(len(site_monitoring_stats)) * 100))
+    print num_format.format('90%','{}/{}'.format(
+            len(site_monitoring_stats[site_monitoring_stats.performance >= 0.90]),
+               len(site_monitoring_stats)),'{:.2f}%'.format(len(site_monitoring_stats[site_monitoring_stats.performance >= 0.90])/ float(len(site_monitoring_stats)) * 100))
+    print num_format.format('95%','{}/{}'.format(
+            len(site_monitoring_stats[site_monitoring_stats.performance >= 0.95]),
+               len(site_monitoring_stats)),'{:.2f}%'.format(len(site_monitoring_stats[site_monitoring_stats.performance >= 0.95])/ float(len(site_monitoring_stats)) * 100))
+    print "\n\n"
+    return site_monitoring_stats
     
     
     
