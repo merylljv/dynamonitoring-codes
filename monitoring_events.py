@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, time
 from itertools import product
 import numpy as np
 import pandas as pd
+import re
 
 import volatile.memory as mem
 import dynadb.db as dbio
@@ -56,33 +57,23 @@ def round_data_ts(date_time):
     return date_time
 
 
-def get_event_profile(start, end):
+def get_sites():
+    query = "SELECT * FROM sites"
+    query += " WHERE active = 1"
+    sites = dbio.df_read(query).set_index('site_id')
+    return sites
+
+
+def get_events(start, end):
     
     query = "SELECT * FROM public_alert_event"
     query += " WHERE event_start BETWEEN '%s'AND '%s'" %(start, end)
     query += " ORDER BY event_id"
     events = dbio.df_read(query)
     
-    query = "SELECT * FROM sites"
-    query += " WHERE active = 1"
-    sites = dbio.df_read(query).set_index('site_id')
+    sites = get_sites()
 
     events = events[events.site_id.isin(sites.index)]
-
-    event_based = events[events.status != 'routine']
-    print ('##########')
-    print ('%s event-based monitoring with %s invalid(s)' %(len(event_based),
-                                    len(events[events.status == 'invalid'])))
-
-    event_based['event_duration'] = (event_based['validity'] - \
-               event_based['event_start']) / np.timedelta64(1, 'D')
-    site_event_prof = event_based.groupby('site_id').agg({'event_duration': \
-                ['count', 'max', 'mean']}).reset_index().set_index('site_id')
-    site_event_prof.columns = ['count', 'max', 'mean']
-    site_event_prof = site_event_prof.join(sites)[['site_code', 'count',
-                                          'max', 'mean']]
-    print ('##########')
-    print ('site event profile:\n %s' %site_event_prof)
     
     return events
 
@@ -120,9 +111,7 @@ def get_expected_routine_release(start, end, events, releases):
                                   'season1': [[1, 4], [2], [2], [1, 4]],
                                   'season2': [[2], [2], [1, 4], [1, 4]]})
     
-    query = "SELECT * FROM sites"
-    query += " WHERE active = 1"
-    sites = dbio.df_read(query)
+    sites = get_sites().reset_index()
     season1_sites = sites[sites.season == 1]['site_id'].values
     season2_sites = sites[sites.season == 2]['site_id'].values
     
@@ -291,7 +280,42 @@ def get_smsoutbox(start, end):
     query += "GROUP BY site_code, org_name, sms_msg "
     query += "ORDER BY outbox_id DESC"
     smsoutbox = dbio.df_read(query)
+    smsoutbox = smsoutbox[smsoutbox.sms_msg.str.contains('ngayong')]
+    smsoutbox['sms_msg'] = smsoutbox.apply(lambda row: row['sms_msg'].replace('(current_date)', pd.to_datetime(row['ts_written']).strftime('%B %d, %Y')), axis=1)
     
+    format_index = smsoutbox[smsoutbox.sms_msg.str.contains('\(current_date_time\)')].index
+    
+    for index in format_index:
+        smsoutbox_row = smsoutbox[smsoutbox.index == index]
+        ts_date = pd.to_datetime(smsoutbox_row['ts_written'].values[0]).date()
+        text = smsoutbox_row['sms_msg'].values[0]
+        sub_text = re.findall('(?=[APMN][MN])\w+', text)[-1]
+        ts_time = (pd.to_datetime(text[re.search('(?=mamayang)\w+', text).end() + 1: re.search('(?=%s)\w+' %sub_text, text).end()].replace('MN', 'AM').replace('NN', 'PM')) - timedelta(hours=4)).time()
+        ts = pd.datetime.combine(ts_date, ts_time).strftime('%B %d, %Y %I:%M %p')
+        replaced_text = text.replace('(current_date_time)', ts)
+        smsoutbox.loc[smsoutbox.index == index, 'sms_msg'] = replaced_text
+    
+    return smsoutbox
+
+
+def get_sms_delay(smsoutbox, start, end):
+    smsoutbox['target_release'] = smsoutbox['sms_msg'].apply(lambda x: x[re.search('(?=ngayong)\w+', x).end() + 1: re.search('(?=[APMN][MN])\w+', x).end()])
+    smsoutbox['target_release'] = smsoutbox['target_release'].apply(lambda x: x.replace('MN', 'AM').replace('NN', 'PM').replace('2018,', '2018').replace(', PM', ' PM').replace(', AM', 'AM').replace(' :', ':'))    
+    
+    format_index = smsoutbox[smsoutbox['target_release'].apply(lambda x: len(x) > 30)].index
+    year_list = range(pd.to_datetime(start).year, pd.to_datetime(end).year + 1)
+    
+    for index in format_index:
+        target_release = smsoutbox[smsoutbox.index == index]['target_release'].values[0]
+        ts_date = pd.to_datetime(target_release[:re.search('(?=%s)\w+' %'|'.join(map(str, year_list)), target_release).end()]).date()
+        ts_time = (pd.to_datetime(target_release[re.search('(?=mamayang)\w+', target_release).end() + 1:].replace('MN', 'AM').replace('NN', 'PM')) - timedelta(hours=4)).time()
+        ts = pd.datetime.combine(ts_date, ts_time).strftime('%B %d, %Y %I:%M %p')
+        smsoutbox.loc[smsoutbox.index == index, 'target_release'] = ts
+                     
+    smsoutbox['target_release'] = pd.to_datetime(smsoutbox['target_release'])
+    smsoutbox['routine_delay'] = (smsoutbox['ts_sent'] - (smsoutbox['target_release'] + timedelta(hours=20/60.))) / np.timedelta64(1, 'm')
+    smsoutbox['event_delay'] = (smsoutbox['ts_sent'] - (smsoutbox['target_release'] + timedelta(hours=30/60.))) / np.timedelta64(1, 'm')
+
     return smsoutbox
 
 
@@ -301,9 +325,10 @@ if __name__ == '__main__':
     
     start = '2018-01-01'
     end = '2018-10-31 23:59:59'
+    sites = get_sites()
     
     # web releases
-    events = get_event_profile(start, end)
+    events = get_events(start, end)
     releases = get_web_releases(start, end, events)
     expected_routine_releases = get_expected_routine_release(start, end, events, releases)
     missed_event_releases, missed_routine_releases = get_missed_releases(releases, events, expected_routine_releases)
@@ -312,3 +337,59 @@ if __name__ == '__main__':
     
     # EWI
     smsoutbox = get_smsoutbox(start, end)
+    smsoutbox = get_sms_delay(smsoutbox, start, end)
+    
+    
+    print ('#################### 2018 monitoring  ####################')
+    
+    event_based = events[events.status != 'routine']
+    print ('##########')
+    print ('%s event-based monitoring with %s invalid(s)' %(len(event_based),
+                                    len(events[events.status == 'invalid'])))
+
+    event_based['event_duration'] = (event_based['validity'] - \
+               event_based['event_start']) / np.timedelta64(1, 'D')
+    site_event_prof = event_based.groupby('site_id').agg({'event_duration': \
+                ['count', 'max', 'mean']}).reset_index().set_index('site_id')
+    site_event_prof.columns = ['count', 'max', 'mean']
+    site_event_prof = site_event_prof.join(sites)[['site_code', 'count',
+                                          'max', 'mean']]
+    print ('##########')
+    print ('site event profile:\n %s' %site_event_prof)
+
+    print ('#########################')
+    print ('########## WEB ##########')
+    print ('#########################')
+    
+    releases['min_delay'] = (releases['release_timestamp'] - releases['target_release']) / np.timedelta64(1, 'm')
+    for quarter in range(1,5):
+        print ('#################### QUARTER %s ####################' %quarter)
+        releaseQ = releases[releases['target_release'].apply(lambda x: x.quarter) == quarter]
+        release_routine = releaseQ[releaseQ.internal_alert_level.isin(['A0', 'ND'])]
+        delayed = release_routine[release_routine.min_delay > 0]
+        print ('successful web release = %s' %(100 - (100. * len(delayed) / len(release_routine))))
+        print ('average sending delay = %s' %round(np.mean(delayed['min_delay']), 2))
+        print ('maximum sending delay = %s' %round(max(delayed['min_delay']), 2))
+        release_event = releaseQ[~releaseQ.internal_alert_level.isin(['A0', 'ND'])]
+        delayed = release_event[release_event.min_delay > 0]
+        print ('successful web release = %s' %(100 - (100. * len(delayed) / len(release_event))))
+        print ('average sending delay = %s' %round(np.mean(delayed['min_delay']), 2))
+        print ('maximum sending delay = %s' %round(max(delayed['min_delay']), 2))
+
+    print ('#########################')
+    print ('########## EWI ##########')
+    print ('#########################')
+    
+    for quarter in range(1,5):
+        print ('#################### QUARTER %s ####################' %quarter)
+        smsoutboxQ = smsoutbox[smsoutbox['target_release'].apply(lambda x: x.quarter) == quarter]
+        smsoutbox_routine = smsoutboxQ[smsoutboxQ.sms_msg.str.contains('Alert 0')]
+        delayed_routine = smsoutbox_routine[(smsoutbox_routine.routine_delay > 0) & (smsoutbox_routine.routine_delay < 60*8)]
+        print ('routine EWI SMS successfully sent within 20mins = %s' %(100 - (100. * len(delayed_routine) / len(smsoutbox_routine))))
+        print ('average sending delay = %s' %round(np.mean(delayed_routine['routine_delay']), 2))
+        print ('maximum sending delay = %s' %round(max(delayed_routine['routine_delay']), 2))
+        smsoutbox_event = smsoutboxQ[~smsoutboxQ.sms_msg.str.contains('Alert 0')]
+        delayed_event = smsoutbox_event[(smsoutbox_event.event_delay > 0) & (smsoutbox_event.event_delay < 60*8)]
+        print ('event EWI SMS successfully sent within 30mins = %s' %(100 - (100. * len(delayed_event) / len(smsoutbox_event))))
+        print ('average sending delay = %s' %round(np.mean(delayed_event['routine_delay']), 2))
+        print ('maximum sending delay = %s' %round(max(delayed_event['routine_delay']), 2))
