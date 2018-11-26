@@ -1,11 +1,20 @@
+import calendar
+from collections import Counter
 from datetime import datetime, timedelta, time
 from itertools import product
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import re
 
 import volatile.memory as mem
 import dynadb.db as dbio
+
+
+def nonrepeat_colors(ax,NUM_COLORS,color='plasma'):
+    cm = plt.get_cmap(color)
+    ax.set_color_cycle([cm(1.*(NUM_COLORS-i-1)/NUM_COLORS) for i in range(NUM_COLORS)[::-1]])
+    return ax
 
 
 def release_time(date_time):
@@ -189,9 +198,35 @@ def get_web_releases(start, end, events):
     releases = releases.append(mn_releases)
     releases = releases.sort_values('release_id', ascending=False)
     releases['target_release'] = releases['data_timestamp'] + timedelta(hours=0.5)
-        
+            
     return releases
 
+
+def get_web_timeliness(releases):
+    releases['min_delay'] = (releases['release_timestamp'] - releases['target_release']) / np.timedelta64(1, 'm')
+    releases['month'] = releases['target_release'].apply(lambda x: x.month)
+    web_timeliness = pd.DataFrame()
+    web_routine = releases[releases.internal_alert_level.isin(['A0', 'ND'])]
+    web_event = releases[~releases.internal_alert_level.isin(['A0', 'ND'])]
+    for month in range(1,11):
+        month_routine = web_routine[web_routine.month == month]
+        delayed_routine = month_routine[month_routine.min_delay > 0]
+        if len(delayed_routine) == 0:
+            delayed_routine = delayed_routine.append(pd.DataFrame({'min_delay': [0]}))
+        month_event = web_event[web_event['target_release'].apply(lambda x: x.month) == month]
+        delayed_event = month_event[month_event.min_delay > 0]
+        if len(delayed_event) == 0:
+            delayed_event = delayed_event.append(pd.DataFrame({'min_delay': [0]}))
+        web_timeliness = web_timeliness.append(pd.DataFrame({'month': [month],
+                                                             'month_abbr': [calendar.month_abbr[month]],
+                                                             'routine_ontime': [100 - (100. * len(delayed_routine) / len(month_routine))],
+                                                             'event_ontime': [100 - (100. * len(delayed_event) / len(month_event))],
+                                                             'max_routine_delay': [max(delayed_routine['min_delay'])],
+                                                             'ave_routine_delay': [np.mean(delayed_routine['min_delay'])],
+                                                             'max_event_delay': [max(delayed_event['min_delay'])],
+                                                             'ave_event_delay': [np.mean(delayed_event['min_delay'])]}),
+                                                             ignore_index=True)
+    return web_timeliness
 
 def get_missed_releases(releases, events, expected_routine):
     for event_id in events[events.status == 'invalid'].event_id:
@@ -313,11 +348,67 @@ def get_sms_delay(smsoutbox, start, end):
         smsoutbox.loc[smsoutbox.index == index, 'target_release'] = ts
                      
     smsoutbox['target_release'] = pd.to_datetime(smsoutbox['target_release'])
-    smsoutbox['routine_delay'] = (smsoutbox['ts_sent'] - (smsoutbox['target_release'] + timedelta(hours=20/60.))) / np.timedelta64(1, 'm')
-    smsoutbox['event_delay'] = (smsoutbox['ts_sent'] - (smsoutbox['target_release'] + timedelta(hours=30/60.))) / np.timedelta64(1, 'm')
+    smsoutbox['routine_delay_sent'] = (smsoutbox['ts_sent'] - (smsoutbox['target_release'] + timedelta(hours=25/60.))) / np.timedelta64(1, 'm')
+    smsoutbox['event_delay_sent'] = (smsoutbox['ts_sent'] - (smsoutbox['target_release'] + timedelta(hours=30/60.))) / np.timedelta64(1, 'm')
+    smsoutbox['routine_delay_written'] = (smsoutbox['ts_written'] - (smsoutbox['target_release'] + timedelta(hours=25/60.))) / np.timedelta64(1, 'm')
+    smsoutbox['event_delay_written'] = (smsoutbox['ts_written'] - (smsoutbox['target_release'] + timedelta(hours=30/60.))) / np.timedelta64(1, 'm')
+    
+    routine_timeliness = pd.DataFrame()
+    event_timeliness = pd.DataFrame()
+    smsoutbox_routine = smsoutbox[smsoutbox.sms_msg.str.contains('Alert 0')]
+    smsoutbox_event = smsoutbox[~smsoutbox.sms_msg.str.contains('Alert 0')]
+    for month in range(1,11):
+        # routine
+        month_routine = smsoutbox_routine[smsoutbox_routine['target_release'].apply(lambda x: x.month) == month]
+        delayed_write = month_routine[(month_routine.routine_delay_written > 0) & (month_routine.routine_delay_written < 60*8)]
+        delayed_sent = month_routine[(month_routine.routine_delay_sent > 0) & (month_routine.routine_delay_sent < 60*8)]
+        routine_timeliness = routine_timeliness.append(pd.DataFrame({'month': [month],
+                      'month_abbr': [calendar.month_abbr[month]],
+                      'sent_ontime': [100 - (100. * len(delayed_sent) / len(month_routine))],
+                      'written_ontime': [100 - (100. * len(delayed_write) / len(month_routine))],
+                      'max_delay_sent': [max(delayed_sent['routine_delay_sent'])],
+                      'max_delay_written': [max(delayed_write['routine_delay_written'])],
+                      'ave_delay_sent': [np.mean(delayed_sent['routine_delay_sent'])],
+                      'ave_delay_written': [np.mean(delayed_write['routine_delay_written'])]}),
+                                                       ignore_index=True)
+        # event
+        month_event = smsoutbox_event[smsoutbox_event['target_release'].apply(lambda x: x.month) == month]
+        delayed_write = month_event[(month_event.event_delay_written > 0) & (month_event.event_delay_written < 60*8)]
+        delayed_sent = month_event[(month_event.event_delay_sent > 0) & (month_event.event_delay_sent < 60*8)]
+        event_timeliness = event_timeliness.append(pd.DataFrame({'month': [month],
+                      'month_abbr': [calendar.month_abbr[month]],
+                      'sent_ontime': [100 - (100. * len(delayed_sent) / len(month_event))],
+                      'written_ontime': [100 - (100. * len(delayed_write) / len(month_event))],
+                      'max_delay_sent': [max(delayed_sent['event_delay_sent'])],
+                      'max_delay_written': [max(delayed_write['event_delay_written'])],
+                      'ave_delay_sent': [np.mean(delayed_sent['event_delay_sent'])],
+                      'ave_delay_written': [np.mean(delayed_write['event_delay_written'])]}),
+                                                   ignore_index=True)
 
-    return smsoutbox
+    return routine_timeliness, event_timeliness
 
+
+def system_uptime():
+    uptime = pd.read_csv('uptime2018.csv')
+    system_up = uptime[uptime.site_count >= 25]
+    system_up['ts_updated'] = pd.to_datetime(system_up['ts_updated'])
+    system_up['ts_updated_month'] = system_up['ts_updated'].apply(lambda x: x.month)
+    system_up['ts'] = pd.to_datetime(system_up['ts'])
+    system_up['ts_month'] = system_up['ts'].apply(lambda x: x.month)
+    month_overlap1 = system_up[system_up.ts_month != system_up.ts_updated_month]
+    month_overlap2 = system_up[system_up.ts_month != system_up.ts_updated_month]
+    system_up = system_up[~system_up.index.isin(month_overlap1.index)]
+    month_overlap1['ts_updated'] = month_overlap1['ts'].apply(lambda x: pd.datetime.combine(x.date(), time(23,30)))
+    system_up = system_up.append(month_overlap1, ignore_index=True)
+    month_overlap2['ts'] = month_overlap2['ts_updated'].apply(lambda x: pd.to_datetime(x.date()))
+    system_up = system_up.append(month_overlap2, ignore_index=True)
+    system_up['month'] = system_up['ts'].apply(lambda x: x.month)
+    system_up['time_up'] = map(int, 1 + (system_up['ts_updated'] - system_up['ts']) / np.timedelta64(1, '30m'))
+    monthly_system_up = system_up.groupby('month').agg({'time_up': 'sum'})
+    monthly_system_up = monthly_system_up[monthly_system_up.index <= 9]
+    monthly_system_up['time_up'] = 100 * monthly_system_up['time_up'] / 1440.
+    monthly_system_up['month_abbr'] = map(lambda x: calendar.month_abbr[x], monthly_system_up.index)
+    return monthly_system_up
 
 ###############################################################################
 
@@ -330,6 +421,7 @@ if __name__ == '__main__':
     # web releases
     events = get_events(start, end)
     releases = get_web_releases(start, end, events)
+    web_timeliness = get_web_timeliness(releases)
     expected_routine_releases = get_expected_routine_release(start, end, events, releases)
     missed_event_releases, missed_routine_releases = get_missed_releases(releases, events, expected_routine_releases)
     expected_event_releases = get_expected_event_releases(missed_event_releases, events, releases)
@@ -337,16 +429,12 @@ if __name__ == '__main__':
     
     # EWI
     smsoutbox = get_smsoutbox(start, end)
-    smsoutbox = get_sms_delay(smsoutbox, start, end)
+    routine_timeliness, event_timeliness = get_sms_delay(smsoutbox, start, end)
     
-    
-    print ('#################### 2018 monitoring  ####################')
-    
+    # system uptime
+    monthly_system_up = system_uptime()
+        
     event_based = events[events.status != 'routine']
-    print ('##########')
-    print ('%s event-based monitoring with %s invalid(s)' %(len(event_based),
-                                    len(events[events.status == 'invalid'])))
-
     event_based['event_duration'] = (event_based['validity'] - \
                event_based['event_start']) / np.timedelta64(1, 'D')
     site_event_prof = event_based.groupby('site_id').agg({'event_duration': \
@@ -354,42 +442,154 @@ if __name__ == '__main__':
     site_event_prof.columns = ['count', 'max', 'mean']
     site_event_prof = site_event_prof.join(sites)[['site_code', 'count',
                                           'max', 'mean']]
-    print ('##########')
-    print ('site event profile:\n %s' %site_event_prof)
-
-    print ('#########################')
-    print ('########## WEB ##########')
-    print ('#########################')
     
-    releases['min_delay'] = (releases['release_timestamp'] - releases['target_release']) / np.timedelta64(1, 'm')
-    for quarter in range(1,5):
-        print ('#################### QUARTER %s ####################' %quarter)
-        releaseQ = releases[releases['target_release'].apply(lambda x: x.quarter) == quarter]
-        release_routine = releaseQ[releaseQ.internal_alert_level.isin(['A0', 'ND'])]
-        delayed = release_routine[release_routine.min_delay > 0]
-        print ('successful web release = %s' %(100 - (100. * len(delayed) / len(release_routine))))
-        print ('average sending delay = %s' %round(np.mean(delayed['min_delay']), 2))
-        print ('maximum sending delay = %s' %round(max(delayed['min_delay']), 2))
-        release_event = releaseQ[~releaseQ.internal_alert_level.isin(['A0', 'ND'])]
-        delayed = release_event[release_event.min_delay > 0]
-        print ('successful web release = %s' %(100 - (100. * len(delayed) / len(release_event))))
-        print ('average sending delay = %s' %round(np.mean(delayed['min_delay']), 2))
-        print ('maximum sending delay = %s' %round(max(delayed['min_delay']), 2))
-
-    print ('#########################')
-    print ('########## EWI ##########')
-    print ('#########################')
+################################ PLOTS ########################################
     
-    for quarter in range(1,5):
-        print ('#################### QUARTER %s ####################' %quarter)
-        smsoutboxQ = smsoutbox[smsoutbox['target_release'].apply(lambda x: x.quarter) == quarter]
-        smsoutbox_routine = smsoutboxQ[smsoutboxQ.sms_msg.str.contains('Alert 0')]
-        delayed_routine = smsoutbox_routine[(smsoutbox_routine.routine_delay > 0) & (smsoutbox_routine.routine_delay < 60*8)]
-        print ('routine EWI SMS successfully sent within 20mins = %s' %(100 - (100. * len(delayed_routine) / len(smsoutbox_routine))))
-        print ('average sending delay = %s' %round(np.mean(delayed_routine['routine_delay']), 2))
-        print ('maximum sending delay = %s' %round(max(delayed_routine['routine_delay']), 2))
-        smsoutbox_event = smsoutboxQ[~smsoutboxQ.sms_msg.str.contains('Alert 0')]
-        delayed_event = smsoutbox_event[(smsoutbox_event.event_delay > 0) & (smsoutbox_event.event_delay < 60*8)]
-        print ('event EWI SMS successfully sent within 30mins = %s' %(100 - (100. * len(delayed_event) / len(smsoutbox_event))))
-        print ('average sending delay = %s' %round(np.mean(delayed_event['routine_delay']), 2))
-        print ('maximum sending delay = %s' %round(max(delayed_event['routine_delay']), 2))
+    # number of events per month
+    event_count = pd.DataFrame(data=Counter(events[events.status != 'routine']['event_start'].apply(lambda x: x.month)).items(), columns=['month', 'count'])
+    event_count['month_abbr'] = event_count['month'].apply(lambda x: calendar.month_abbr[x])
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.bar(range(1,11), event_count['count'])
+    ax.set_xticks(range(1,11))
+    ax.set_xticklabels(event_count['month_abbr'])
+    ax.set_xlabel('Month', fontsize='large')
+    ax.set_ylabel('Frequency of events', fontsize='large')
+    ax.set_title('Number of Event-based monitoring', fontsize='xx-large')
+    fig.savefig('event_monitoring.PNG')
+    
+    
+    # number of events per site
+    site_event_prof = site_event_prof.sort_values('count', ascending=False)
+    fig = plt.figure(figsize=(8,6))
+    ax = fig.add_subplot(111)
+    ax.bar(range(1, len(site_event_prof)+1), site_event_prof['count'])
+    ax.set_xticks(range(1, len(site_event_prof)+1))
+    ax.set_xticklabels(site_event_prof['site_code'], rotation=90)
+    ax.set_xlabel('Site code', fontsize='large')
+    ax.set_ylabel('Frequency of events', fontsize='large')
+    ax.set_title('Number of Event-based monitoring', fontsize='xx-large')
+    fig.savefig('site_event_monitoring.PNG')
+    
+    # duration of event per site
+    site_event_prof = site_event_prof.sort_values('max', ascending=False)
+    fig = plt.figure(figsize=(8,6))
+    ax = fig.add_subplot(111)
+    ax.bar(range(1, len(site_event_prof)+1), site_event_prof['max'], label='maximum')
+    ax.bar(range(1, len(site_event_prof)+1), site_event_prof['mean'], label='average')
+    ax.set_xticks(range(1, len(site_event_prof)+1))
+    ax.set_xticklabels(site_event_prof['site_code'], rotation=90)
+    ax.set_xlabel('Site code', fontsize='large')
+    ax.set_ylabel('Number of days', fontsize='large')
+    ax.legend(loc=1, fontsize='small')
+    ax.set_title('Duration of Event-based monitoring', fontsize='xx-large')
+    fig.savefig('event_duration.PNG')
+
+    # uptime
+    fig = plt.figure(figsize=(8,6))
+    ax = fig.add_subplot(111)
+    ax.bar(range(1, len(monthly_system_up)+1), monthly_system_up['time_up'])
+    ax.set_xticks(range(1, len(monthly_system_up)+1))
+    ax.set_xticklabels(monthly_system_up['month_abbr'])
+    ax.set_xlabel('Month', fontsize='large')
+    ax.set_ylabel('Percentage', fontsize='large')
+    ax.legend(loc=1, fontsize='small')
+    ax.set_title('System Uptime', fontsize='xx-large')
+    fig.savefig('uptime.PNG')
+    
+    # ewi successfully sent
+    fig = plt.figure(figsize=(8,6))
+    ax = fig.add_subplot(111)
+    ax = nonrepeat_colors(ax,4,color='gray')
+    width = 0.8
+    ax.bar(event_timeliness['month']*2 - width/2., event_timeliness['written_ontime'], label='written event')
+    ax.bar(event_timeliness['month']*2 - width/2., event_timeliness['sent_ontime'], label='sent event')
+    ax.bar(routine_timeliness['month']*2 + width/2., routine_timeliness['written_ontime'], label='written routine')
+    ax.bar(routine_timeliness['month']*2 + width/2., routine_timeliness['sent_ontime'], label='sent routine')
+    ax.set_xticks(routine_timeliness['month']*2)
+    ax.set_xticklabels(routine_timeliness['month_abbr'])
+    ax.set_xlabel('Month', fontsize='large')
+    ax.set_ylabel('Percentage', fontsize='large')
+    ax.legend(loc=1, fontsize='small')
+    ax.set_title('EWI sent on time', fontsize='xx-large')
+    fig.savefig('timeliness.PNG')
+    
+    # ewi sending delay
+    fig = plt.figure(figsize=(12,6))
+    ax = fig.add_subplot(111, frameon=False)
+    fig.suptitle('EWI sending delay', fontsize='xx-large')
+    ax.set_xticks([])
+    ax.set_xticklabels([])
+    ax.set_yticks([])
+    ax.set_yticklabels([])
+    ax.set_xlabel('Month', fontsize='large', labelpad=30)
+    ax.set_ylabel('Minutes', fontsize='large', labelpad=30)
+    fig.subplots_adjust(wspace=0.05)
+    # routine
+    ax1 = fig.add_subplot(121)
+    ax1 = nonrepeat_colors(ax1,4,color='gray')
+    width = 0.8
+    ax1.bar(routine_timeliness['month']*2 - width/2., routine_timeliness['max_delay_sent'], label='max sending delay')
+    ax1.bar(routine_timeliness['month']*2 - width/2., routine_timeliness['ave_delay_sent'], label='ave sending delay')
+    ax1.bar(routine_timeliness['month']*2 + width/2., routine_timeliness['max_delay_written'], label='max writing delay')
+    ax1.bar(routine_timeliness['month']*2 + width/2., routine_timeliness['ave_delay_written'], label='ave writing delay')
+    ax1.set_xticks(routine_timeliness['month']*2)
+    ax1.set_xticklabels(routine_timeliness['month_abbr'])
+    ax1.legend(loc=1, fontsize='small')
+    ax1.set_title('Routine', fontsize='xx-large')
+    # routine
+    ax2 = fig.add_subplot(122, sharey=ax)
+    ax2 = nonrepeat_colors(ax2,4,color='gray')
+    width = 0.8
+    ax2.bar(event_timeliness['month']*2 - width/2., event_timeliness['max_delay_sent'], label='max sending delay')
+    ax2.bar(event_timeliness['month']*2 - width/2., event_timeliness['ave_delay_sent'], label='ave sending delay')
+    ax2.bar(event_timeliness['month']*2 + width/2., event_timeliness['max_delay_written'], label='max writing delay')
+    ax2.bar(event_timeliness['month']*2 + width/2., event_timeliness['ave_delay_written'], label='ave writing delay')
+    ax2.set_xticks(event_timeliness['month']*2)
+    ax2.set_xticklabels(event_timeliness['month_abbr'])
+    ax2.legend(loc=1, fontsize='small')
+    ax2.set_title('Event', fontsize='xx-large')
+    fig.savefig('ewi_delay.PNG')
+    
+    # on time web releases
+    fig = plt.figure(figsize=(8,6))
+    ax = fig.add_subplot(111)
+    width = 0.8
+    ax.bar(web_timeliness['month']*2 - width/2., web_timeliness['routine_ontime'], label='routine')
+    ax.bar(web_timeliness['month']*2 + width/2., web_timeliness['event_ontime'], label='event')
+    ax.set_xticks(web_timeliness['month']*2)
+    ax.set_xticklabels(web_timeliness['month_abbr'])
+    ax.set_xlabel('Month', fontsize='large')
+    ax.set_ylabel('Percentage', fontsize='large')
+    ax.legend(loc=1, fontsize='small')
+    ax.set_title('On-time web releases', fontsize='xx-large')
+    fig.savefig('web_timeliness.PNG')
+
+    # web sending delay
+    fig = plt.figure(figsize=(12,6))
+    ax = fig.add_subplot(111, frameon=False)
+    fig.suptitle('Delay in web release', fontsize='xx-large')
+    ax.set_xticks([])
+    ax.set_xticklabels([])
+    ax.set_yticks([])
+    ax.set_yticklabels([])
+    ax.set_xlabel('Month', fontsize='large', labelpad=30)
+    ax.set_ylabel('Minutes', fontsize='large', labelpad=30)
+    fig.subplots_adjust(wspace=0.05)
+    # routine
+    ax1 = fig.add_subplot(121)
+    ax1.bar(web_timeliness['month'], web_timeliness['max_routine_delay'], label='max delay')
+    ax1.bar(web_timeliness['month'], web_timeliness['ave_routine_delay'], label='ave delay')
+    ax1.set_xticks(web_timeliness['month'])
+    ax1.set_xticklabels(web_timeliness['month_abbr'])
+    ax1.legend(loc=1, fontsize='small')
+    ax1.set_title('Routine', fontsize='xx-large')
+    # routine
+    ax2 = fig.add_subplot(122, sharey=ax)
+    ax2.bar(web_timeliness['month'], web_timeliness['max_event_delay'], label='max delay')
+    ax2.bar(web_timeliness['month'], web_timeliness['ave_event_delay'], label='ave delay')
+    ax2.set_xticks(web_timeliness['month'])
+    ax2.set_xticklabels(web_timeliness['month_abbr'])
+    ax2.legend(loc=1, fontsize='small')
+    ax2.set_title('Event', fontsize='xx-large')
+    fig.savefig('web_delay.PNG')
